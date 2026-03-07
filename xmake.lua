@@ -74,7 +74,6 @@ target("application", function()
     after_build(function(target)
         local cross = get_config("cross") or ""
         local objcopy = cross .. "objcopy"
-        -- 如果配置了sdk路径，则拼接完整路径
         local sdk = get_config("sdk")
         if sdk then
             objcopy = path.join(sdk, "bin", objcopy)
@@ -83,5 +82,48 @@ target("application", function()
         local bin_file = path.join(path.directory(elf_file), path.basename(elf_file) .. ".bin")
         os.execv(objcopy, {"-O", "binary", elf_file, bin_file})
         cprint("${green}[bin]${clear} %s", bin_file)
+
+        -- 解析 map 文件，读取 FLASH 和 RAM 占用
+        local map_file = "application.map"
+        local flash_start, flash_end, ram_end
+
+        local file = io.open(map_file, "r")
+        if file then
+            for line in file:lines() do
+                -- 读取 FLASH 起始地址（.isr_vector 段）
+                local addr = line:match("^%.isr_vector%s+(0x%x+)")
+                if addr then
+                    flash_start = tonumber(addr)
+                end
+                -- 读取 .data 段的 load address（FLASH 结束位置）
+                local load_addr = line:match("load address (0x%x+)")
+                if load_addr then
+                    flash_end = tonumber(load_addr)
+                end
+                -- 读取 .bss 段地址和大小（RAM 占用）
+                local bss_addr, bss_size = line:match("^%.bss%s+(0x%x+)%s+(0x%x+)")
+                if bss_addr and bss_size then
+                    ram_end = tonumber(bss_addr) + tonumber(bss_size)
+                end
+            end
+            file:close()
+        end
+
+        -- 打印内存占用信息
+        if flash_start and flash_end then
+            local flash_used = flash_end - flash_start
+            local flash_total = 1024 * 1024  -- 1024K
+            cprint("${green}[FLASH]${clear} used: %d bytes (%.2f KB) / %d KB  (%.2f%%)",
+                flash_used, flash_used / 1024, flash_total / 1024,
+                flash_used / flash_total * 100)
+        end
+        if ram_end then
+            local ram_start = 0x20000000
+            local ram_used = ram_end - ram_start
+            local ram_total = 128 * 1024  -- 128K
+            cprint("${green}[RAM  ]${clear} used: %d bytes (%.2f KB) / %d KB  (%.2f%%)",
+                ram_used, ram_used / 1024, ram_total / 1024,
+                ram_used / ram_total * 100)
+        end
     end)
 end)
