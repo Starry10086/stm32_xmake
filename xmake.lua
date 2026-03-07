@@ -74,6 +74,11 @@ target("application", function()
     after_build(function(target)
         local cross = get_config("cross") or ""
         local objcopy = cross .. "objcopy"
+        -- 如果配置了sdk路径，则拼接完整路径
+        local sdk = get_config("sdk")
+        if sdk then
+            objcopy = path.join(sdk, "bin", objcopy)
+        end
         local elf_file = target:targetfile()
         local bin_file = path.join(path.directory(elf_file), path.basename(elf_file) .. ".bin")
         os.execv(objcopy, {"-O", "binary", elf_file, bin_file})
