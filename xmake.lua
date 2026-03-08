@@ -26,9 +26,9 @@ target("application", function()
 
     -- 添加源文件和头文件
     -- add_files("bsp/SEGGER/**.c", "bsp/SEGGER/**.S")
-    -- add_files("app/**.cpp", "utility/**.cpp")
+    add_files("app/Src.cpp", "utility/**.cpp")
     -- add_files("app/**.h")
-    add_includedirs(".", "app/plugin", "app/**", "bsp/**")
+    add_includedirs(".", "app/plugin", "app/Inc", "bsp/**")
     
 
     -- 在任何模式下都生成调试信息
@@ -68,4 +68,15 @@ target("application", function()
 
     -- 启用垃圾收集：在链接过程中删除未使用的变量和函数
     add_ldflags("-Wl,--gc-sections")
+    
+    -- 生成链接映射文件
+    add_ldflags("-Wl,-Map=application.map")
+    after_build(function(target)
+        local cross = get_config("cross") or ""
+        local objcopy = cross .. "objcopy"
+        local elf_file = target:targetfile()
+        local bin_file = path.join(path.directory(elf_file), path.basename(elf_file) .. ".bin")
+        os.execv(objcopy, {"-O", "binary", elf_file, bin_file})
+        cprint("${green}[bin]${clear} %s", bin_file)
+    end)
 end)
