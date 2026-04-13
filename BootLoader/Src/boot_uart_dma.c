@@ -3,8 +3,7 @@
 #include "boot_flash.h"
 #include <string.h>
 
-#define OTA_CMD_START 0x01
-#define OTA_CMD_END 0x03
+#define OTA_CMD_START 0xFE
 #define OTA_CMD_TIMEOUT 5000U
 
 OTA_StateTypeDef OTA_State = OTA_STATE_IDLE;
@@ -14,6 +13,39 @@ static uint8_t s_dma_buf[UART_DMA_BUF_SIZE];
 static uint8_t s_ring_buf[UART_RINGBUFFER_SIZE];
 static struct rt_ringbuffer s_ring;
 static uint16_t s_old_pos = 0;
+static uint8_t s_leftover_buf[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t s_leftover_cnt = 0;
+static uint32_t s_last_time = 0;
+
+static int8_t boot_flash_write_checked(uint32_t addr, const uint8_t *data, uint32_t len){
+    uint32_t app_limit = APP_END_ADDR + 1U;
+
+    if(len == 0U){
+        return 0;
+    }
+    if((addr < APP_START_ADDR) || (addr >= app_limit) || (len > (app_limit - addr)) || ((len & 0x3U) != 0U)){
+        return -1;
+    }
+    return Flash_WriteData(addr, data, len);
+}
+
+static int8_t boot_flush_leftover_word(void){
+    if(s_leftover_cnt == 0U){
+        return 0;
+    }
+
+    while(s_leftover_cnt < 4U){
+        s_leftover_buf[s_leftover_cnt++] = 0xFF;
+    }
+    if(boot_flash_write_checked(CurrentWriteAddr, s_leftover_buf, 4U) != 0){
+        return -1;
+    }
+
+    CurrentWriteAddr += 4U;
+    s_leftover_cnt = 0U;
+    memset(s_leftover_buf, 0xFF, sizeof(s_leftover_buf));
+    return 0;
+}
 
 static void boot_uart_push_data(const uint8_t *data, uint16_t len){
     rt_ringbuffer_put(&s_ring, data, len);
@@ -90,6 +122,9 @@ void boot_process_packet(){
             if(Flash_Erase() == 0){
                 OTA_State = OTA_STATE_RECEVING;
                 CurrentWriteAddr = APP_START_ADDR;
+                s_leftover_cnt = 0U;
+                s_last_time = HAL_GetTick();
+                memset(s_leftover_buf, 0xFF, sizeof(s_leftover_buf));
                 boot_uart_print("Erase success\r\n");
             }
             else{
@@ -99,18 +134,15 @@ void boot_process_packet(){
         break;
         case OTA_STATE_RECEVING:
             {
-                static uint8_t s_leftover_buf[4] = {0xFF, 0xFF, 0xFF, 0xFF};
-                static uint8_t s_leftover_cnt = 0;
-                static uint32_t s_last_time = 0;
-
                 if(s_last_time == 0){
                         s_last_time = HAL_GetTick();
                 }
                 if(HAL_GetTick() - s_last_time > OTA_CMD_TIMEOUT){
-                        while(s_leftover_cnt < 4){
-                            s_leftover_buf[s_leftover_cnt++] = 0xFF;
+                        if(boot_flush_leftover_word() != 0){
+                            OTA_State = OTA_STATE_IDLE;
+                            boot_uart_print("WRITE FAIL\r\n");
+                            break;
                         }
-                        Flash_WriteData(CurrentWriteAddr, s_leftover_buf, 4);
                         OTA_State = OTA_STATE_DONE;
                         boot_uart_print("TIME OUT\r\n");
                         break;
@@ -122,22 +154,17 @@ void boot_process_packet(){
                 if(n == 0)
                     break;
                 s_last_time = HAL_GetTick();
-                if(n == 1 && rx_buf[0] == OTA_CMD_END){
-                        while(s_leftover_cnt < 4){
-                            s_leftover_buf[s_leftover_cnt++] = 0xFF;
-                        }
-                        Flash_WriteData(CurrentWriteAddr, s_leftover_buf, 4);
-                        OTA_State = OTA_STATE_DONE;
-                        boot_uart_print("END\r\n");
-                        break;
-                }
 
                 uint16_t idx = 0;
-                while(0 < s_leftover_cnt < 4 && idx < n){
+                while((s_leftover_cnt > 0U) && (s_leftover_cnt < 4U) && (idx < n)){
                         s_leftover_buf[s_leftover_cnt++] = rx_buf[idx++];
                 }
                 if(s_leftover_cnt == 4){
-                        Flash_WriteData(CurrentWriteAddr, s_leftover_buf, 4);
+                        if(boot_flash_write_checked(CurrentWriteAddr, s_leftover_buf, 4U) != 0){
+                            OTA_State = OTA_STATE_IDLE;
+                            boot_uart_print("WRITE FAIL\r\n");
+                            break;
+                        }
                         CurrentWriteAddr += 4;
                         s_leftover_cnt = 0;
                         memset(s_leftover_buf, 0xFF, 4);
@@ -145,13 +172,22 @@ void boot_process_packet(){
                 uint16_t remain = n - idx;
                 uint16_t bulk = remain & 0xFFFC;
                 if(bulk > 0){
-                        Flash_WriteData(CurrentWriteAddr, &rx_buf[idx], bulk);
+                        if(boot_flash_write_checked(CurrentWriteAddr, &rx_buf[idx], bulk) != 0){
+                            OTA_State = OTA_STATE_IDLE;
+                            boot_uart_print("WRITE FAIL\r\n");
+                            break;
+                        }
                         CurrentWriteAddr += bulk;
                         idx += bulk;
                         remain -= bulk;
                 }
                 remain = n - idx;
                 while(remain > 0){
+                        if(s_leftover_cnt >= 4U){
+                            OTA_State = OTA_STATE_IDLE;
+                            boot_uart_print("BUF OVF\r\n");
+                            break;
+                        }
                         s_leftover_buf[s_leftover_cnt++] = rx_buf[idx++];
                         remain--;
                 }

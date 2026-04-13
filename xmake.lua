@@ -25,7 +25,7 @@ local function setup_common()
     on_load("script.read_hal_makefile")
 
     -- 公共头文件路径
-    add_includedirs(".", "Component", "BootLoader/Inc", "App/Inc", "bsp/**")
+    add_includedirs(".", "Component", "BootLoader/Inc", "bsp/**")
 
     -- 调试信息
     add_cxflags("-g", "-gdwarf-2")
@@ -80,7 +80,6 @@ target("bootloader", function()
     setup_common()
 
     -- 仅 BootLoader 需要的宏和源码
-    add_defines("BOOT_IMAGE")
     add_files("BootLoader/Src/*.c", "Component/ringbuffer.c")
 
     -- BootLoader 链接地址: 0x08000000, 64K
@@ -88,56 +87,4 @@ target("bootloader", function()
     add_ldflags("-Wl,-Map=bootloader.map")
 
     add_bin_postbuild("bootloader")
-end)
-
-target("app", function()
-    setup_common()
-
-    -- 仅 APP 需要的宏
-    add_defines("APP_IMAGE", "APP_START_ADDR=0x08010000")
-
-    -- APP 业务源码（可选，有文件再加入）
-    local app_c = os.files("App/Src/*.c")
-    local app_cpp = os.files("App/Src/*.cpp")
-    if #app_c > 0 then
-        add_files("App/Src/*.c")
-    end
-    if #app_cpp > 0 then
-        add_files("App/Src/*.cpp")
-    end
-
-    -- APP 链接地址: 0x08010000, 960K
-    add_ldflags("-T bsp/HAL/STM32F407XX_APP.ld")
-    add_ldflags("-Wl,-Map=app.map")
-
-    add_bin_postbuild("app")
-end)
-
-target("factory", function()
-    set_kind("phony")
-    add_deps("bootloader", "app")
-
-    -- 合并成最终单文件 factory.bin
-    on_build(function()
-        local mode = get_config("mode") or "release"
-        local outdir = path.join("build", "cross", "arm", mode)
-
-        local boot_bin = path.join(outdir, "bootloader.bin")
-        local app_bin  = path.join(outdir, "app.bin")
-        local out_bin  = path.join(outdir, "factory.bin")
-
-        assert(os.isfile(boot_bin), "missing file: " .. boot_bin)
-        assert(os.isfile(app_bin), "missing file: " .. app_bin)
-
-        os.execv("powershell", {
-            "-ExecutionPolicy", "Bypass",
-            "-File", "script/merge_bins.ps1",
-            "-BootBin", boot_bin,
-            "-AppBin", app_bin,
-            "-OutBin", out_bin,
-            "-AppOffset", "0x10000"
-        })
-
-        cprint("${green}[factory]${clear} %s", out_bin)
-    end)
 end)

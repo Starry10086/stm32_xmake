@@ -70,6 +70,18 @@ int8_t Flash_WriteData(uint32_t addr, const uint8_t *data, uint32_t len){
     return 0;
 }
 
+void Clear_SysTick(void) {
+    SysTick->CTRL = 0;    // 1. 关闭定时器、关闭中断请求、选择外部时钟源
+    SysTick->LOAD = 0;    // 2. 清空重装载值
+    SysTick->VAL  = 0;    // 3. 清空当前计数值（写任意值都会清零，并清除 CTRL 中的 COUNTFLAG 位）
+}
+
+/*
+* __attribute__((noreturn))   明确告诉编译器：这个函数是一条不归路，不要给它生成任何收尾代码（POP指令） 
+* 定义独立的包裹函数
+* 此时 app_msp 在 R0 寄存器，jump_addr 在 R1 寄存器
+* 直接使用寄存器 R1 的值跳转，不触碰任何局部内存变量
+*/
 __attribute__((noreturn))
 static void boot_jump_app(uint32_t app_msp, uint32_t app_addr){
     typedef void (*pFunction)(void);
@@ -86,10 +98,21 @@ void Jump_App(){
         uint32_t JumpAddr = *(__IO uint32_t*) (APP_START_ADDR + 4);
 
         __disable_irq();
+        // 复位MCU 厂商定义的外设
         HAL_DeInit();
+        // 清理ARM 内核外设（SysTick 和 NVIC）
+        Clear_SysTick();
+        // 清除挂起的中断标志位
+        for(int i = 0; i < 8; ++i){
+            NVIC->ICER[i] = 0xFFFFFFFF;
+            NVIC->ICPR[i] = 0xFFFFFFFF;
+        }
+        // 设置向量表偏移地址为应用程序起始地址
         SCB->VTOR = APP_START_ADDR;
+        // 数据同步与指令同步屏障，确保所有内存访问完成并且指令流水线刷新
         __DSB();
         __ISB();
+        // 调用包裹函数，通过寄存器传参
         boot_jump_app(app_msp, JumpAddr);
     }
 }
