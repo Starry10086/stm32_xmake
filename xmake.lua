@@ -5,72 +5,60 @@ set_policy("build.warning", true)
 set_policy("check.auto_ignore_flags", false)
 set_languages("c11", "c++20")
 
-set_config("plat", "cross")           -- 交叉编译
-set_config("cross", "arm-none-eabi-") -- 设置交叉编译平台
-set_toolchains("gnu-rm")              -- 使用gnu-arm工具链
+set_config("plat", "cross")
+set_config("cross", "arm-none-eabi-")
+set_toolchains("gnu-rm")
 
-target("application", function()
+local function setup_common()
     set_kind("binary")
     add_rules("c++", "asm")
     set_extension(".elf")
 
-    if is_mode("debug") then       -- 调试模式，开启O0优化
+    if is_mode("debug") then
         set_optimize("none")
-    elseif is_mode("release") then -- 发布模式，开启O3优化和NDEBUG标志
+    elseif is_mode("release") then
         set_optimize("fastest")
         add_cxflags("-DNDEBUG")
     end
 
-    -- 从CubeMX生成的Makefile中读取hal的源文件和头文件
+    -- 从 CubeMX Makefile 自动导入 HAL/CMSIS 源文件和头文件
     on_load("script.read_hal_makefile")
 
-    -- 添加源文件和头文件
-    -- add_files("bsp/SEGGER/**.c", "bsp/SEGGER/**.S")
-    add_files("app/Src.cpp", "utility/**.cpp")
-    -- add_files("app/**.h")
-    add_includedirs(".", "app/plugin", "app/Inc", "bsp/**")
-    
+    -- 公共头文件路径
+    add_includedirs(".", "Component", "BootLoader/Inc", "App/Inc", "bsp/**")
 
-    -- 在任何模式下都生成调试信息
+    -- 调试信息
     add_cxflags("-g", "-gdwarf-2")
 
-    -- 为gcc设置编译平台
+    -- Cortex-M4 平台参数
     add_cxflags("-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard")
     add_asflags("-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard")
     add_ldflags("-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard")
 
-    -- 启用all和extra级别的警告，启用变量遮蔽(shadow)的警告，并将所有警告视为错误
-    add_cxflags("-Wall", "-Wextra", "-Werror")
-    -- (白名单)未使用的变量视为警告，未使用的函数参数不警告
+    -- 告警策略
+    add_cxflags("-Wall", "-Wextra")
     add_cxflags("-Wno-error=unused", "-Wno-error=unused-variable")
     add_cxflags("-Wno-error=unused-but-set-variable", "-Wno-error=unused-function", "-Wno-unused-parameter")
     add_cxxflags("-Wno-error=unused-local-typedefs")
-    -- 对于gcc编译器，需要加一句-pedantic-errors禁用所有GNU扩展
     add_cxflags("-pedantic-errors")
 
-    -- 定义HAL库相关的宏
+    -- HAL 宏
     add_defines("USE_HAL_DRIVER", "STM32F407xx")
 
-    -- 将全局变量和函数放置在目标文件中的单独部分中，允许链接器在链接过程中删除未使用的变量和函数，减少最终文件的大小
+    -- 减小体积
     add_cxflags("-fdata-sections", "-ffunction-sections")
+    add_ldflags("-Wl,--gc-sections")
 
-    -- 禁用C++的异常和RTTI特性(标准库未支持)
+    -- C++ 运行时限制
     add_cxxflags("-fno-exceptions", "-fno-rtti")
-    -- 禁止static变量初始化时自动加锁
     add_cxxflags("-fno-threadsafe-statics")
 
-    -- 指定链接脚本
-    add_ldflags("-T bsp/HAL/STM32F407XX_FLASH.ld")
-    -- 链接标准c库，数学库和标准c++库
+    -- 链接基础库
     add_ldflags("-lc", "-lm", "-lstdc++")
-    -- 在链接时打印内存占用
     add_ldflags("-Wl,--print-memory-usage")
+end
 
-    -- 启用垃圾收集：在链接过程中删除未使用的变量和函数
-    add_ldflags("-Wl,--gc-sections")
-    
-    -- 生成链接映射文件
-    add_ldflags("-Wl,-Map=application.map")
+local function add_bin_postbuild(bin_name)
     after_build(function(target)
         local cross = get_config("cross") or ""
         local objcopy = cross .. "objcopy"
@@ -78,52 +66,78 @@ target("application", function()
         if sdk then
             objcopy = path.join(sdk, "bin", objcopy)
         end
+
         local elf_file = target:targetfile()
-        local bin_file = path.join(path.directory(elf_file), path.basename(elf_file) .. ".bin")
-        os.execv(objcopy, {"-O", "binary", elf_file, bin_file})
+        local outdir = path.directory(elf_file)
+        local bin_file = path.join(outdir, bin_name .. ".bin")
+
+        os.execv(objcopy, { "-O", "binary", elf_file, bin_file })
         cprint("${green}[bin]${clear} %s", bin_file)
+    end)
+end
 
-        -- 解析 map 文件，读取 FLASH 和 RAM 占用
-        local map_file = "application.map"
-        local flash_start, flash_end, ram_end
+target("bootloader", function()
+    setup_common()
 
-        local file = io.open(map_file, "r")
-        if file then
-            for line in file:lines() do
-                -- 读取 FLASH 起始地址（.isr_vector 段）
-                local addr = line:match("^%.isr_vector%s+(0x%x+)")
-                if addr then
-                    flash_start = tonumber(addr)
-                end
-                -- 读取 .data 段的 load address（FLASH 结束位置）
-                local load_addr = line:match("load address (0x%x+)")
-                if load_addr then
-                    flash_end = tonumber(load_addr)
-                end
-                -- 读取 .bss 段地址和大小（RAM 占用）
-                local bss_addr, bss_size = line:match("^%.bss%s+(0x%x+)%s+(0x%x+)")
-                if bss_addr and bss_size then
-                    ram_end = tonumber(bss_addr) + tonumber(bss_size)
-                end
-            end
-            file:close()
-        end
+    -- 仅 BootLoader 需要的宏和源码
+    add_defines("BOOT_IMAGE")
+    add_files("BootLoader/Src/*.c", "Component/ringbuffer.c")
 
-        -- 打印内存占用信息
-        if flash_start and flash_end then
-            local flash_used = flash_end - flash_start
-            local flash_total = 1024 * 1024  -- 1024K
-            cprint("${green}[FLASH]${clear} used: %d bytes (%.2f KB) / %d KB  (%.2f%%)",
-                flash_used, flash_used / 1024, flash_total / 1024,
-                flash_used / flash_total * 100)
-        end
-        if ram_end then
-            local ram_start = 0x20000000
-            local ram_used = ram_end - ram_start
-            local ram_total = 128 * 1024  -- 128K
-            cprint("${green}[RAM  ]${clear} used: %d bytes (%.2f KB) / %d KB  (%.2f%%)",
-                ram_used, ram_used / 1024, ram_total / 1024,
-                ram_used / ram_total * 100)
-        end
+    -- BootLoader 链接地址: 0x08000000, 64K
+    add_ldflags("-T bsp/HAL/STM32F407XX_BOOT.ld")
+    add_ldflags("-Wl,-Map=bootloader.map")
+
+    add_bin_postbuild("bootloader")
+end)
+
+target("app", function()
+    setup_common()
+
+    -- 仅 APP 需要的宏
+    add_defines("APP_IMAGE", "APP_START_ADDR=0x08010000")
+
+    -- APP 业务源码（可选，有文件再加入）
+    local app_c = os.files("App/Src/*.c")
+    local app_cpp = os.files("App/Src/*.cpp")
+    if #app_c > 0 then
+        add_files("App/Src/*.c")
+    end
+    if #app_cpp > 0 then
+        add_files("App/Src/*.cpp")
+    end
+
+    -- APP 链接地址: 0x08010000, 960K
+    add_ldflags("-T bsp/HAL/STM32F407XX_APP.ld")
+    add_ldflags("-Wl,-Map=app.map")
+
+    add_bin_postbuild("app")
+end)
+
+target("factory", function()
+    set_kind("phony")
+    add_deps("bootloader", "app")
+
+    -- 合并成最终单文件 factory.bin
+    on_build(function()
+        local mode = get_config("mode") or "release"
+        local outdir = path.join("build", "cross", "arm", mode)
+
+        local boot_bin = path.join(outdir, "bootloader.bin")
+        local app_bin  = path.join(outdir, "app.bin")
+        local out_bin  = path.join(outdir, "factory.bin")
+
+        assert(os.isfile(boot_bin), "missing file: " .. boot_bin)
+        assert(os.isfile(app_bin), "missing file: " .. app_bin)
+
+        os.execv("powershell", {
+            "-ExecutionPolicy", "Bypass",
+            "-File", "script/merge_bins.ps1",
+            "-BootBin", boot_bin,
+            "-AppBin", app_bin,
+            "-OutBin", out_bin,
+            "-AppOffset", "0x10000"
+        })
+
+        cprint("${green}[factory]${clear} %s", out_bin)
     end)
 end)

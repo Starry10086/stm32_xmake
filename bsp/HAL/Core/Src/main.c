@@ -18,11 +18,17 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#if defined(BOOT_IMAGE)
+#include "boot_uart_dma.h"
+#include "boot_flash.h"
+#include "boot_config.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,7 +71,11 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  #if defined(APP_IMAGE)
+  SCB->VTOR = APP_START_ADDR; // 设置向量表偏移地址为应用程序起始地址
+  __DSB();
+  __ISB();
+  #endif
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -86,8 +96,14 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  #if defined(BOOT_IMAGE)
+  boot_uart_init();
+  #elif defined(APP_IMAGE)
+  __enable_irq();
+  #endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -97,6 +113,28 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    #if defined(BOOT_IMAGE)
+    static uint32_t boot_start_tick = 0;
+    uint32_t now = HAL_GetTick();
+    static uint32_t led_time = 0;
+    if(boot_start_tick == 0){
+        boot_start_tick = now;
+        led_time = now;
+    }
+    if(now - led_time > 500){
+        HAL_GPIO_TogglePin(GPIOE,GPIO_PIN_4);
+        led_time = now;
+    }
+    boot_process_packet();
+    if(now - boot_start_tick > BOOT_WAIT_MS && OTA_State == OTA_STATE_IDLE){
+      Jump_App();
+    }
+    #elif defined(APP_IMAGE)
+    HAL_GPIO_TogglePin(GPIOE,GPIO_PIN_3);
+    HAL_Delay(500);
+    HAL_GPIO_TogglePin(GPIOE,GPIO_PIN_4);
+    HAL_Delay(500);
+    #endif
   }
   /* USER CODE END 3 */
 }
