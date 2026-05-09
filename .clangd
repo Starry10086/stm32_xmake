@@ -1,0 +1,26 @@
+CompileFlags:
+  CompilationDatabase: .
+---
+If:
+  PathMatch: .*\.h
+CompileFlags:
+  Compiler: D:/arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi/bin/arm-none-eabi-gcc.exe
+  Add:
+    - --target=arm-none-eabi
+    - -std=c11
+    - -DUSE_HAL_DRIVER
+    - -DSTM32F407xx
+    - -mcpu=cortex-m4
+    - -mthumb
+    - -mfpu=fpv4-sp-d16
+    - -mfloat-abi=hard
+    - -I.
+    - -IComponent/ota
+    - -IComponent/ringbuffer
+    - -ICommon
+    - -IBootLoader/Inc
+    - -Ibsp/HAL/Core/Inc
+    - -Ibsp/HAL/Drivers/STM32F4xx_HAL_Driver/Inc
+    - -Ibsp/HAL/Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+    - -Ibsp/HAL/Drivers/CMSIS/Device/ST/STM32F4xx/Include
+    - -Ibsp/HAL/Drivers/CMSIS/Include
